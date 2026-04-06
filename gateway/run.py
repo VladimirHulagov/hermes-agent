@@ -8379,6 +8379,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         formatter=RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'),
     )
 
+    if os.getenv("GATEWAY_CONSOLE_LOG", "").lower() in ("1", "true", "yes"):
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+        console_handler.setLevel(getattr(logging, os.getenv("GATEWAY_LOG_LEVEL", "INFO").upper(), logging.INFO))
+        logging.getLogger().addHandler(console_handler)
+
     # Optional stderr handler — level driven by -v/-q flags on the CLI.
     # verbosity=None (-q/--quiet): no stderr output
     # verbosity=0    (default):    WARNING and above

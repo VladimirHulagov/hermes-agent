@@ -14,7 +14,7 @@ WORKDIR /opt/hermes
 
 # Install Python and Node dependencies in one layer, no cache
 RUN pip install --no-cache-dir uv --break-system-packages && \
-    uv pip install --system --break-system-packages --no-cache -e ".[all]" && \
+    uv pip install --system --break-system-packages --no-cache -e ".[all]" httpx[socks] "python-telegram-bot[socks]" aiohttp_socks socksio && \
     npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
     cd /opt/hermes/scripts/whatsapp-bridge && \

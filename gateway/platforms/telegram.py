@@ -543,14 +543,18 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in ("1", "true", "yes", "on"))
             fallback_ips = self._fallback_ips()
-            if not fallback_ips:
+            _has_proxy = bool(
+                os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+                or os.getenv("ALL_PROXY") or os.getenv("https_proxy")
+                or os.getenv("http_proxy") or os.getenv("all_proxy")
+            )
+            if not _has_proxy and not fallback_ips:
                 fallback_ips = await discover_fallback_ips()
                 logger.info(
                     "[%s] Auto-discovered Telegram fallback IPs: %s",
                     self.name,
                     ", ".join(fallback_ips),
                 )
-
             if fallback_ips and not proxy_configured and not disable_fallback:
                 logger.info(
                     "[%s] Telegram fallback IPs active: %s",
@@ -2096,17 +2100,28 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._is_group_chat(message):
             return True
-        if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        text_preview = (getattr(message, "text", None) or "")[:60]
+        if chat_id in self._telegram_free_response_chats():
+            logger.info("[%s] ACCEPT (free_response_chat %s): %r", self.name, chat_id, text_preview)
             return True
         if not self._telegram_require_mention():
+            logger.info("[%s] ACCEPT (require_mention disabled): %r", self.name, text_preview)
             return True
         if is_command:
+            logger.info("[%s] ACCEPT (command): %r", self.name, text_preview)
             return True
         if self._is_reply_to_bot(message):
+            logger.info("[%s] ACCEPT (reply_to_bot): %r", self.name, text_preview)
             return True
         if self._message_mentions_bot(message):
+            logger.info("[%s] ACCEPT (mention): %r", self.name, text_preview)
             return True
-        return self._message_matches_mention_patterns(message)
+        if self._message_matches_mention_patterns(message):
+            logger.info("[%s] ACCEPT (mention_pattern): %r", self.name, text_preview)
+            return True
+        logger.info("[%s] SKIP (no trigger in group %s): %r", self.name, chat_id, text_preview)
+        return False
 
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
