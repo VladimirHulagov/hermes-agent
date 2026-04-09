@@ -2,13 +2,14 @@
 """
 Text-to-Speech Tool Module
 
-Supports six TTS providers:
+Supports seven TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
+- XTTS v2 (local, free, CPU): Coqui TTS with voice cloning, needs /opt/tts-env
 
 Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
@@ -500,6 +501,178 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
 
 
 # ===========================================================================
+# Provider: XTTS v2 (local, free, CPU — Coqui TTS with voice cloning)
+# ===========================================================================
+
+DEFAULT_XTTS_SPEAKER = "Damjan Chapman"
+DEFAULT_XTTS_LANGUAGE = "ru"
+DEFAULT_XTTS_VENV = "/opt/tts-env"
+DEFAULT_XTTS_CACHE = "/opt/tts-env/tts_cache"
+
+
+def _check_xtts_available() -> bool:
+    """Check if XTTS v2 is available in the dedicated venv."""
+    python_bin = os.path.join(DEFAULT_XTTS_VENV, "bin", "python3")
+    if not os.path.isfile(python_bin):
+        return False
+    # Check that the model checkpoint exists (faster than importing TTS)
+    model_dir = os.path.join(DEFAULT_XTTS_CACHE, "tts", "tts", "tts_models--multilingual--multi-dataset--xtts_v2")
+    if os.path.isdir(model_dir):
+        return True
+    # Fallback: try importing (slower, ~10s)
+    try:
+        clean_env = {k: v for k, v in os.environ.items()
+                     if k.lower() not in ("http_proxy", "https_proxy")}
+        clean_env["COQUI_TOS_AGREED"] = "1"
+        clean_env["TTS_HOME"] = DEFAULT_XTTS_CACHE
+        result = subprocess.run(
+            [python_bin, "-c", "from TTS.api import TTS; print('ok')"],
+            capture_output=True, text=True, timeout=15, env=clean_env,
+        )
+        return "ok" in result.stdout
+    except Exception:
+        return False
+
+
+def _generate_xtts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using local XTTS v2 (Coqui TTS).
+
+    Runs in a subprocess using the dedicated venv to avoid dependency conflicts.
+    Outputs WAV; the caller handles conversion for Telegram if needed.
+    """
+    xtts_config = tts_config.get("xtts", {})
+    speaker = xtts_config.get("speaker", DEFAULT_XTTS_SPEAKER)
+    language = xtts_config.get("language", DEFAULT_XTTS_LANGUAGE)
+    speaker_wav = xtts_config.get("speaker_wav", "")
+
+    python_bin = os.path.join(DEFAULT_XTTS_VENV, "bin", "python3")
+
+    # XTTS outputs WAV natively — use a .wav path for generation
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    inner_script = (
+        "import os, sys\n"
+        "os.environ['COQUI_TOS_AGREED'] = '1'\n"
+        "os.environ['TTS_HOME'] = os.environ.get('XTTS_CACHE', '')\n"
+        "for k in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):\n"
+        "    os.environ.pop(k, None)\n"
+        "\n"
+        "from TTS.api import TTS\n"
+        "\n"
+        "speaker = os.environ.get('XTTS_SPEAKER', 'Damjan Chapman')\n"
+        "language = os.environ.get('XTTS_LANGUAGE', 'ru')\n"
+        "speaker_wav = os.environ.get('XTTS_SPEAKER_WAV', '')\n"
+        "text = sys.argv[1]\n"
+        "out = sys.argv[2]\n"
+        "\n"
+        "tts = TTS('xtts_v2')\n"
+        "\n"
+        "kwargs = {'text': text, 'language': language, 'file_path': out}\n"
+        "if speaker_wav and os.path.isfile(speaker_wav):\n"
+        "    kwargs['speaker_wav'] = speaker_wav\n"
+        "else:\n"
+        "    kwargs['speaker'] = speaker\n"
+        "\n"
+        "tts.tts_to_file(**kwargs)\n"
+        "print('OK')\n"
+    )
+
+    env = {k: v for k, v in os.environ.items()
+           if k.lower() not in ("http_proxy", "https_proxy")}
+    env.update({
+        "COQUI_TOS_AGREED": "1",
+        "TTS_HOME": DEFAULT_XTTS_CACHE,
+        "XTTS_SPEAKER": speaker,
+        "XTTS_LANGUAGE": language,
+        "XTTS_SPEAKER_WAV": speaker_wav,
+        "XTTS_CACHE": DEFAULT_XTTS_CACHE,
+    })
+
+    cmd = [python_bin, "-c", inner_script, text, wav_path]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+    if result.returncode != 0 or "OK" not in result.stdout:
+        error_lines = result.stderr.strip().split("\n")[-5:]
+        raise RuntimeError("XTTS synthesis failed: " + "\n".join(error_lines))
+
+    # Play on Khadas BEFORE converting/deleting WAV (raw 24kHz WAV is best for streaming)
+    if tts_config.get("khadas", {}).get("enabled"):
+        _play_on_khadas(wav_path, tts_config)
+
+    # Convert WAV to final format (MP3/OGG) if needed
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            subprocess.run(conv_cmd, check=True, timeout=30)
+            os.remove(wav_path)
+        else:
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
+
+def _play_on_khadas(audio_path: str, tts_config: Dict[str, Any]) -> bool:
+    """Stream audio to Khadas VIM2 speaker via SSH pipe to aplay.
+
+    No file is written on the remote device — audio streams over stdin.
+    Returns True if playback succeeded.
+    """
+    khadas_config = tts_config.get("khadas", {})
+    host = khadas_config.get("host", "10.1.1.50")
+    user = khadas_config.get("user", "root")
+    password = khadas_config.get("password", "rnd123")
+    device = khadas_config.get("device", "plughw:1,0")
+
+    sshpass = shutil.which("sshpass")
+    if not sshpass:
+        logger.warning("sshpass not installed, cannot play on Khadas")
+        return False
+
+    # Convert to 48kHz 16-bit mono WAV for aplay compatibility
+    play_wav = audio_path
+    need_cleanup = False
+    if not audio_path.endswith(".wav"):
+        play_wav = audio_path.rsplit(".", 1)[0] + "_play.wav"
+        need_cleanup = True
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            subprocess.run(
+                [ffmpeg, "-i", audio_path, "-ar", "48000", "-ac", "1",
+                 "-sample_fmt", "s16", "-y", "-loglevel", "error", play_wav],
+                check=True, timeout=15,
+            )
+        else:
+            play_wav = audio_path
+            need_cleanup = False
+
+    # Stream audio via SSH pipe directly to aplay — no file on Khadas disk
+    try:
+        with open(play_wav, "rb") as f:
+            result = subprocess.run(
+                [sshpass, "-p", password, "ssh", "-o", "StrictHostKeyChecking=no",
+                 "-o", "ConnectTimeout=5", f"{user}@{host}",
+                 f"aplay -D {device} -q"],
+                stdin=f, capture_output=True, timeout=30,
+            )
+        if result.returncode == 0:
+            logger.info("Streamed audio to Khadas %s", host)
+            return True
+        else:
+            logger.warning("Khadas aplay failed: %s", result.stderr.decode())
+            return False
+    except Exception as e:
+        logger.warning("Khadas playback error: %s", e)
+        return False
+    finally:
+        if need_cleanup and os.path.exists(play_wav):
+            os.remove(play_wav)
+
+
+
+# ===========================================================================
 # Main tool function
 # ===========================================================================
 def text_to_speech_tool(
@@ -609,6 +782,17 @@ def text_to_speech_tool(
                 }, ensure_ascii=False)
             logger.info("Generating speech with NeuTTS (local)...")
             _generate_neutts(text, file_str, tts_config)
+
+        elif provider == "xtts":
+            if not _check_xtts_available():
+                return json.dumps({
+                    "success": False,
+                    "error": "XTTS v2 provider selected but Coqui TTS is not installed in the dedicated venv. "
+                             "Install to /opt/tts-env with: python3 -m venv /opt/tts-env && "
+                             "/opt/tts-env/bin/pip install coqui-tts torch --index-url https://download.pytorch.org/whl/cpu"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with XTTS v2 (local CPU)...")
+            _generate_xtts(text, file_str, tts_config)
 
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
@@ -1015,6 +1199,7 @@ if __name__ == "__main__":
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
     print(f"  MiniMax:    {'API key set' if os.getenv('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    print(f"  XTTS v2:    {'installed' if _check_xtts_available() else 'not installed (needs /opt/tts-env with coqui-tts)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 
