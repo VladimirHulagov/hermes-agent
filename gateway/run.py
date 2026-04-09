@@ -7106,6 +7106,11 @@ class GatewayRunner:
             or os.getenv("HERMES_TOOL_PROGRESS_MODE")
             or "all"
         )
+        # What content to show in progress: "commands", "commentary", or "all"
+        progress_content = (
+            user_config.get("display", {}).get("tool_progress_content")
+            or "commands"
+        )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
@@ -7122,8 +7127,21 @@ class GatewayRunner:
             if not progress_queue:
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+            if event_type == "reasoning.available" and preview:
+                if progress_content not in ("commentary", "all"):
+                    return
+                from agent.display import get_tool_preview_max_len
+                _pl = get_tool_preview_max_len()
+                think_text = preview
+                if _pl > 0 and len(think_text) > _pl:
+                    think_text = think_text[:_pl - 3] + "..."
+                progress_queue.put(f"💭 {think_text}")
+                return
+
             if event_type not in ("tool.started",):
+                return
+
+            if progress_content not in ("commands", "all"):
                 return
 
             # "new" mode: only report when tool changes
@@ -7132,13 +7150,12 @@ class GatewayRunner:
             last_tool[0] = tool_name
             
             # Build progress message with primary argument preview
-            from agent.display import get_tool_emoji
+            from agent.display import get_tool_emoji, get_tool_preview_max_len
             emoji = get_tool_emoji(tool_name, default="⚙️")
             
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if args:
-                    from agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()
                     import json as _json
                     args_str = _json.dumps(args, ensure_ascii=False, default=str)
