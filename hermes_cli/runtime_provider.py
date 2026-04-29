@@ -9,6 +9,14 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_pool_reset_at(entry) -> Optional[float]:
+    try:
+        from agent.credential_pool import _parse_absolute_timestamp
+        return _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
+    except Exception:
+        return None
+
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
 from hermes_cli.auth import (
@@ -658,12 +666,6 @@ def resolve_runtime_provider(
                 getattr(entry, "runtime_api_key", None)
                 or getattr(entry, "access_token", "")
             )
-        # For Nous, the pool entry's runtime_api_key is the agent_key — a
-        # short-lived inference credential (~30 min TTL).  The pool doesn't
-        # refresh it during selection (that would trigger network calls in
-        # non-runtime contexts like `hermes auth list`).  If the key is
-        # expired, clear pool_api_key so we fall through to
-        # resolve_nous_runtime_credentials() which handles refresh + mint.
         if provider == "nous" and entry is not None and pool_api_key:
             min_ttl = max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
             nous_state = {
@@ -681,6 +683,42 @@ def resolve_runtime_provider(
                 model_cfg=model_cfg,
                 pool=pool,
             )
+
+        # Pool has credentials but all are in exhaustion cooldown.
+        # Wait for the soonest one to recover rather than falling through
+        # to the env var (which would bypass the pool and use an exhausted key).
+        if not pool.has_available():
+            soonest = None
+            import time as _time
+            now = _time.time()
+            for e in pool.entries():
+                if e.last_status == "exhausted":
+                    reset_at = _parse_pool_reset_at(e)
+                    if reset_at and (soonest is None or reset_at < soonest):
+                        soonest = reset_at
+            if soonest:
+                wait_s = max(1, int(soonest - now))
+                logger.warning(
+                    "All %s pool credentials exhausted — waiting %ds for cooldown reset",
+                    provider, wait_s,
+                )
+                # Re-check after waiting (pool clears expired cooldowns)
+                import time as _time2
+                _time2.sleep(min(wait_s, 120))
+                entry = pool.select()
+                if entry is not None:
+                    pool_api_key = (
+                        getattr(entry, "runtime_api_key", None)
+                        or getattr(entry, "access_token", "")
+                    )
+                    if pool_api_key:
+                        return _resolve_runtime_from_pool_entry(
+                            provider=provider,
+                            entry=entry,
+                            requested_provider=requested_provider,
+                            model_cfg=model_cfg,
+                            pool=pool,
+                        )
 
     if provider == "nous":
         try:
