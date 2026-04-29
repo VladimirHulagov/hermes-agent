@@ -506,8 +506,8 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
 
 DEFAULT_XTTS_SPEAKER = "Damjan Chapman"
 DEFAULT_XTTS_LANGUAGE = "ru"
-DEFAULT_XTTS_VENV = "/opt/tts-env"
-DEFAULT_XTTS_CACHE = "/opt/tts-env/tts_cache"
+DEFAULT_XTTS_VENV = "/opt/data/tts-env"
+DEFAULT_XTTS_CACHE = "/opt/data/tts-cache"
 
 
 def _check_xtts_available() -> bool:
@@ -516,7 +516,7 @@ def _check_xtts_available() -> bool:
     if not os.path.isfile(python_bin):
         return False
     # Check that the model checkpoint exists (faster than importing TTS)
-    model_dir = os.path.join(DEFAULT_XTTS_CACHE, "tts", "tts", "tts_models--multilingual--multi-dataset--xtts_v2")
+    model_dir = os.path.join(DEFAULT_XTTS_CACHE, "tts", "tts_models--multilingual--multi-dataset--xtts_v2")
     if os.path.isdir(model_dir):
         return True
     # Fallback: try importing (slower, ~10s)

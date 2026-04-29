@@ -394,22 +394,33 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     prevent arbitrary script execution via path traversal or absolute
     path injection.
 
+    The *script_path* string may contain arguments separated by whitespace
+    (e.g. ``"my_script.py arg1 arg2"``).  Only the first token is treated
+    as the script file; the rest are forwarded as command-line arguments.
+
     Args:
-        script_path: Path to a Python script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+        script_path: Path to a Python script (optionally followed by args).
+            Relative paths are resolved against HERMES_HOME/scripts/.
+            Absolute and ~-prefixed paths are also validated to ensure they
+            stay within the scripts dir.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
+    import shlex
     from hermes_constants import get_hermes_home
 
     scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
-    raw = Path(script_path).expanduser()
+    # Split script_path into the script file and optional arguments.
+    parts = shlex.split(script_path)
+    script_file = parts[0]
+    script_args = parts[1:]
+
+    raw = Path(script_file).expanduser()
     if raw.is_absolute():
         path = raw.resolve()
     else:
@@ -434,7 +445,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     try:
         result = subprocess.run(
-            [sys.executable, str(path)],
+            [sys.executable, str(path)] + script_args,
             capture_output=True,
             text=True,
             timeout=script_timeout,
