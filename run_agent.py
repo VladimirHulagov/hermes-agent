@@ -8867,20 +8867,41 @@ class AIAgent:
                         FailoverReason.rate_limit,
                         FailoverReason.billing,
                     )
-                    if is_rate_limited and self._fallback_index < len(self._fallback_chain):
-                        # Don't eagerly fallback if credential pool rotation may
-                        # still recover.  The pool's retry-then-rotate cycle needs
-                        # at least one more attempt to fire — jumping to a fallback
-                        # provider here short-circuits it.
+                    if is_rate_limited:
                         pool = self._credential_pool
                         pool_may_recover = pool is not None and pool.has_available()
-                        if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                            if self._try_activate_fallback():
-                                retry_count = 0
-                                compression_attempts = 0
-                                primary_recovery_attempted = False
-                                continue
+                        if self._fallback_index < len(self._fallback_chain):
+                            # Don't eagerly fallback if credential pool rotation may
+                            # still recover.  The pool's retry-then-rotate cycle needs
+                            # at least one more attempt to fire — jumping to a fallback
+                            # provider here short-circuits it.
+                            if not pool_may_recover:
+                                self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                                if self._try_activate_fallback():
+                                    retry_count = 0
+                                    compression_attempts = 0
+                                    primary_recovery_attempted = False
+                                    continue
+                        elif self._fallback_activated and not pool_may_recover:
+                            # Fallback provider is also rate-limited and no more
+                            # fallbacks remain.  Retrying the same rate-limited
+                            # fallback won't help — abort immediately instead of
+                            # wasting retries with exponential backoff.
+                            _summary = self._summarize_api_error(api_error)
+                            self._emit_status(f"❌ Rate limited on fallback (no more providers) — {_summary}")
+                            logging.error(
+                                "%sRate limited on fallback provider, chain exhausted: %s | provider=%s model=%s",
+                                self.log_prefix, _summary, _provider, _model,
+                            )
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": f"API call failed: {_summary}",
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "failed": True,
+                                "error": _summary,
+                            }
 
                     is_payload_too_large = (
                         classified.reason == FailoverReason.payload_too_large
