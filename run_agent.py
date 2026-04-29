@@ -5491,9 +5491,26 @@ class AIAgent:
 
         The gateway caches agents across messages (``_agent_cache`` in
         ``gateway/run.py``), so this restoration IS needed there too.
+
+        However, when the credential pool's current (primary) credential is
+        still in exhaustion cooldown, restoration is skipped — the pool has
+        already selected an alternative and restoring would bounce back to the
+        dead credential.
         """
         if not self._fallback_activated:
             return False
+
+        # Don't restore if the credential pool has the primary key exhausted
+        # — the pool already rotated to an available key.
+        pool = self._credential_pool
+        if pool is not None:
+            current_pool_entry = pool.current()
+            if current_pool_entry and current_pool_entry.last_status == "exhausted":
+                logging.info(
+                    "Skipping primary runtime restore: credential pool has exhausted key (resets %s)",
+                    getattr(current_pool_entry, 'last_error_reset_at', 'unknown'),
+                )
+                return False
 
         rt = self._primary_runtime
         try:
@@ -8859,38 +8876,43 @@ class AIAgent:
                         # Fall through to normal error handling if compression
                         # is exhausted or didn't help.
 
-                    # Eager fallback for rate-limit errors (429 or quota exhaustion).
-                    # When a fallback model is configured, switch immediately instead
-                    # of burning through retries with exponential backoff -- the
-                    # primary provider won't recover within the retry window.
-                    is_rate_limited = classified.reason in (
-                        FailoverReason.rate_limit,
-                        FailoverReason.billing,
-                    )
-                    if is_rate_limited:
+                    # ── Smart error-specific recovery ──────────────────────
+                    # Three distinct 429/503 scenarios need different handling:
+                    #
+                    # 1. billing (periodic quota exhaustion, e.g. "Weekly/Monthly
+                    #    Limit Exhausted"): credential is dead for hours/days.
+                    #    → Rotate credential pool or fallback provider immediately.
+                    #
+                    # 2. rate_limit (momentary, e.g. "too many requests"):
+                    #    transient throttling that resolves in seconds.
+                    #    → Retry with backoff, don't switch credential.
+                    #
+                    # 3. overloaded (503/529): provider is temporarily saturated.
+                    #    → Retry with longer delay (~60s), don't switch credential.
+                    is_billing = classified.reason == FailoverReason.billing
+                    is_momentary_rate_limit = classified.reason == FailoverReason.rate_limit
+                    is_overloaded = classified.reason == FailoverReason.overloaded
+
+                    if is_billing:
                         pool = self._credential_pool
                         pool_may_recover = pool is not None and pool.has_available()
-                        if self._fallback_index < len(self._fallback_chain):
-                            # Don't eagerly fallback if credential pool rotation may
-                            # still recover.  The pool's retry-then-rotate cycle needs
-                            # at least one more attempt to fire — jumping to a fallback
-                            # provider here short-circuits it.
-                            if not pool_may_recover:
-                                self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                                if self._try_activate_fallback():
-                                    retry_count = 0
-                                    compression_attempts = 0
-                                    primary_recovery_attempted = False
-                                    continue
-                        elif self._fallback_activated and not pool_may_recover:
-                            # Fallback provider is also rate-limited and no more
-                            # fallbacks remain.  Retrying the same rate-limited
-                            # fallback won't help — abort immediately instead of
-                            # wasting retries with exponential backoff.
+                        if pool_may_recover:
+                            # Credential pool has another key — mark current
+                            # exhausted and let the pool rotation handle it
+                            # via _recover_with_credential_pool on next retry.
+                            pass
+                        elif self._fallback_index < len(self._fallback_chain):
+                            self._emit_status("⚠️ Quota exhausted — switching to fallback provider...")
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                        else:
                             _summary = self._summarize_api_error(api_error)
-                            self._emit_status(f"❌ Rate limited on fallback (no more providers) — {_summary}")
+                            self._emit_status(f"❌ Quota exhausted (no fallback available) — {_summary}")
                             logging.error(
-                                "%sRate limited on fallback provider, chain exhausted: %s | provider=%s model=%s",
+                                "%sQuota exhausted, no recovery path: %s | provider=%s model=%s",
                                 self.log_prefix, _summary, _provider, _model,
                             )
                             self._persist_session(messages, conversation_history)
@@ -8902,6 +8924,48 @@ class AIAgent:
                                 "failed": True,
                                 "error": _summary,
                             }
+
+                    if is_momentary_rate_limit and self._fallback_index < len(self._fallback_chain):
+                        # Eager fallback only for rate-limit when credential pool
+                        # can't recover and fallback chain exists.
+                        pool = self._credential_pool
+                        pool_may_recover = pool is not None and pool.has_available()
+                        if not pool_may_recover:
+                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            if self._try_activate_fallback():
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+
+                    if is_overloaded:
+                        # Provider is saturated — retry after a longer delay
+                        # instead of the default short backoff.  Don't rotate
+                        # credentials (the key is fine, the server is just busy).
+                        _retry_after = 60
+                        self._emit_status(f"⚠️ Provider overloaded — retrying in {_retry_after}s...")
+                        logger.warning(
+                            "Provider overloaded (503/529), waiting %ds | provider=%s model=%s",
+                            _retry_after, _provider, _model,
+                        )
+                        sleep_end = time.time() + _retry_after
+                        while time.time() < sleep_end:
+                            if self._interrupt_requested:
+                                self._persist_session(messages, conversation_history)
+                                self.clear_interrupt()
+                                return {
+                                    "final_response": "Operation interrupted during overload wait.",
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "interrupted": True,
+                                }
+                            time.sleep(0.5)
+                        continue
+
+                    # Alias for the generic retry path below — momentary rate
+                    # limits get backoff + Retry-After header handling.
+                    is_rate_limited = is_momentary_rate_limit
 
                     is_payload_too_large = (
                         classified.reason == FailoverReason.payload_too_large

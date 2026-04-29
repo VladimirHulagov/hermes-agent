@@ -250,16 +250,18 @@ class TestClassifyApiError:
         assert result.should_fallback is True
 
     def test_429_weekly_limit_exhausted(self):
-        """429 with 'Weekly/Monthly Limit Exhausted' is still rate_limit
-        (contains 'resets at' transient signal).  The retry/fallback layer
-        in run_agent.py handles fail-fast when fallback chain is exhausted."""
+        """429 with 'Weekly/Monthly Limit Exhausted' is billing (periodic quota
+        exhaustion), not a transient rate limit.  Should trigger credential
+        rotation, not retry backoff."""
         e = MockAPIError(
             "HTTP 429: Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-05-02 16:43:57",
             status_code=429,
         )
         result = classify_api_error(e)
-        assert result.reason == FailoverReason.rate_limit
-        assert result.retryable is True
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
 
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.

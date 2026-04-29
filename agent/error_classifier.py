@@ -98,6 +98,12 @@ _BILLING_PATTERNS = [
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",
+    "limit exhausted",
+    "limit depleted",
+    "quota exhausted",
+    "quota depleted",
+    "weekly limit",
+    "monthly limit",
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)
@@ -465,7 +471,17 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above; this is a normal rate limit
+        # Already checked long_context_tier above.
+        # Distinguish periodic quota exhaustion (billing) from momentary
+        # rate limits.  "Weekly/Monthly Limit Exhausted" etc. mean the
+        # credential is unusable for hours/days — retrying is pointless.
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
