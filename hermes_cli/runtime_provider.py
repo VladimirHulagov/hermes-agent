@@ -685,40 +685,50 @@ def resolve_runtime_provider(
             )
 
         # Pool has credentials but all are in exhaustion cooldown.
-        # Wait for the soonest one to recover rather than falling through
-        # to the env var (which would bypass the pool and use an exhausted key).
+        # Don't fall through to env var — return the pool anyway so
+        # the agent can rotate credentials during the conversation.
+        # Use the entry with the soonest reset (closest to recovery).
         if not pool.has_available():
-            soonest = None
+            logger.warning(
+                "All %s pool credentials in cooldown — selecting closest to reset",
+                provider,
+            )
+            # Clear expired cooldowns and try again
             import time as _time
             now = _time.time()
             for e in pool.entries():
                 if e.last_status == "exhausted":
                     reset_at = _parse_pool_reset_at(e)
-                    if reset_at and (soonest is None or reset_at < soonest):
-                        soonest = reset_at
-            if soonest:
-                wait_s = max(1, int(soonest - now))
-                logger.warning(
-                    "All %s pool credentials exhausted — waiting %ds for cooldown reset",
-                    provider, wait_s,
-                )
-                # Re-check after waiting (pool clears expired cooldowns)
-                import time as _time2
-                _time2.sleep(min(wait_s, 120))
-                entry = pool.select()
-                if entry is not None:
-                    pool_api_key = (
-                        getattr(entry, "runtime_api_key", None)
-                        or getattr(entry, "access_token", "")
-                    )
-                    if pool_api_key:
-                        return _resolve_runtime_from_pool_entry(
-                            provider=provider,
-                            entry=entry,
-                            requested_provider=requested_provider,
-                            model_cfg=model_cfg,
-                            pool=pool,
+                    # Default 1-hour cooldown if no explicit reset_at
+                    if reset_at is None and e.last_status_at:
+                        reset_at = e.last_status_at + 3600
+                    if reset_at and now >= reset_at:
+                        from dataclasses import replace as _replace
+                        cleared = _replace(
+                            e,
+                            last_status=None,
+                            last_status_at=None,
+                            last_error_code=None,
+                            last_error_reason=None,
+                            last_error_message=None,
+                            last_error_reset_at=None,
                         )
+                        pool._replace_entry(e, cleared)
+                        pool._persist()
+            entry = pool.select()
+            if entry is not None:
+                pool_api_key = (
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                )
+                if pool_api_key:
+                    return _resolve_runtime_from_pool_entry(
+                        provider=provider,
+                        entry=entry,
+                        requested_provider=requested_provider,
+                        model_cfg=model_cfg,
+                        pool=pool,
+                    )
 
     if provider == "nous":
         try:
