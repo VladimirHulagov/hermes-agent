@@ -408,10 +408,15 @@ Write only the summary body. Do not include any preamble or prefix."""
                 "task": "compression",
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": summary_budget * 2,
-                # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
+            if self.api_key:
+                call_kwargs["api_key"] = self.api_key
+            if self.base_url:
+                call_kwargs["base_url"] = self.base_url
+            if self.provider:
+                call_kwargs["provider"] = self.provider
             response = call_llm(**call_kwargs)
             content = response.choices[0].message.content
             # Handle cases where content is not a string (e.g., dict from llama.cpp)

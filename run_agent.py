@@ -4569,6 +4569,14 @@ class AIAgent:
             self._is_anthropic_oauth = _is_oauth_token(runtime_key)
             self.api_key = runtime_key
             self.base_url = runtime_base
+            if hasattr(self, "context_compressor") and self.context_compressor:
+                self.context_compressor.update_model(
+                    model=self.model,
+                    context_length=self.context_compressor.context_length,
+                    base_url=self.base_url,
+                    api_key=self.api_key,
+                    provider=self.provider,
+                )
             return
 
         self.api_key = runtime_key
@@ -4577,6 +4585,16 @@ class AIAgent:
         self._client_kwargs["base_url"] = self.base_url
         self._apply_client_headers_for_base_url(self.base_url)
         self._replace_primary_openai_client(reason="credential_rotation")
+
+        # Keep context compressor in sync with the new credential
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            self.context_compressor.update_model(
+                model=self.model,
+                context_length=self.context_compressor.context_length,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                provider=self.provider,
+            )
 
     def _recover_with_credential_pool(
         self,
