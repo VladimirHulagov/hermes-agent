@@ -6469,6 +6469,8 @@ class AIAgent:
                     reasoning = msg.get("reasoning")
                     if reasoning:
                         api_msg["reasoning_content"] = reasoning
+                    elif msg.get("tool_calls") and "deepseek" in (self.model or "").lower():
+                        api_msg["reasoning_content"] = " "
                 api_msg.pop("reasoning", None)
                 api_msg.pop("finish_reason", None)
                 api_msg.pop("_flush_sentinel", None)
@@ -8017,8 +8019,9 @@ class AIAgent:
                 if msg.get("role") == "assistant":
                     reasoning_text = msg.get("reasoning")
                     if reasoning_text:
-                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
                         api_msg["reasoning_content"] = reasoning_text
+                    elif msg.get("tool_calls") and "deepseek" in (self.model or "").lower():
+                        api_msg["reasoning_content"] = " "
 
                 # Remove 'reasoning' field - it's for trajectory storage only
                 # We've copied it to 'reasoning_content' for the API above
