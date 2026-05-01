@@ -240,6 +240,13 @@ class MemoryStore:
 
         return self._success_response(target, "Entry added.")
 
+    @staticmethod
+    def _find_matches(entries: list, old_text: str) -> list:
+        exact = [(i, e) for i, e in enumerate(entries) if old_text == e]
+        if exact:
+            return exact
+        return [(i, e) for i, e in enumerate(entries) if old_text in e]
+
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         old_text = old_text.strip()
@@ -258,7 +265,7 @@ class MemoryStore:
             self._reload_target(target)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            matches = self._find_matches(entries, old_text)
 
             if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
@@ -308,7 +315,7 @@ class MemoryStore:
             self._reload_target(target)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            matches = self._find_matches(entries, old_text)
 
             if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
