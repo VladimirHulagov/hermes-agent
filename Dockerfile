@@ -3,6 +3,10 @@ FROM debian:13.4
 # Disable Python stdout buffering to ensure logs are printed immediately
 ENV PYTHONUNBUFFERED=1
 
+# Use Yandex mirrors
+RUN sed -i 's|deb.debian.org|mirror.yandex.ru|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    sed -i 's|deb.debian.org|mirror.yandex.ru|g' /etc/apt/sources.list 2>/dev/null; true
+
 # Install system dependencies in one layer, clear APT cache
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
