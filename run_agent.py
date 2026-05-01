@@ -108,6 +108,32 @@ from agent.trajectory import (
 )
 from utils import atomic_json_write, env_var_enabled
 
+# ── task_complete tool (Paperclip heartbeat enforcement) ──────────────────
+_TASK_COMPLETE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "task_complete",
+        "description": (
+            "Signal that the current task is FULLY completed. "
+            "Call this ONLY when all work is done, all deliverables are produced, "
+            "and all checks are passed. Do NOT call if there are still steps to take "
+            "or results to verify — continue using other tools instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "A concise summary of what was accomplished, key results, and any important findings."
+                }
+            },
+            "required": ["summary"]
+        }
+    }
+}
+
+
+
 
 
 class _SafeWriter:
@@ -2630,6 +2656,19 @@ class AIAgent:
                     )
                     if sec_match:
                         context["reset_at"] = time.time() + float(sec_match.group(1))
+
+                if "reset_at" not in context:
+                    abs_match = re.search(
+                        r"(?:reset|resets?|renew|renewed)\s+at\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})",
+                        message,
+                        re.IGNORECASE,
+                    )
+                    if abs_match:
+                        try:
+                            from datetime import datetime as _dt
+                            context["reset_at"] = _dt.fromisoformat(abs_match.group(1)).timestamp()
+                        except (ValueError, OSError):
+                            pass
 
         return context
 
@@ -6062,6 +6101,8 @@ class AIAgent:
             }
         if self.tools:
             api_kwargs["tools"] = self.tools
+            if getattr(self, '_tool_choice_required', False):
+                api_kwargs["tool_choice"] = "required"
 
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
@@ -6740,6 +6781,11 @@ class AIAgent:
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
             )
+        elif function_name == "task_complete":
+            import json as _json
+            self._task_completed = True
+            self._task_summary = function_args.get("summary", "")
+            return _json.dumps({"success": True, "message": "Task marked as complete."})
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -7140,6 +7186,13 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
+            elif function_name == "task_complete":
+                self._task_completed = True
+                self._task_summary = function_args.get("summary", "")
+                function_result = json.dumps({"success": True, "message": "Task marked as complete."})
+                tool_duration = time.time() - tool_start_time
+                if self._should_emit_quiet_tool_messages():
+                    self._vprint(f"  task_complete: {self._task_summary[:100]}")
             elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
                 # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
                 spinner = None
@@ -7868,6 +7921,15 @@ class AIAgent:
                 _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
             except Exception:
                 pass
+
+        # ── task_complete tool injection (Paperclip heartbeat enforcement) ──
+        if getattr(self, '_enable_task_complete', False) and self.tools is not None:
+            if "task_complete" not in self.valid_tool_names:
+                self.tools.append(_TASK_COMPLETE_TOOL)
+                self.valid_tool_names.add("task_complete")
+            self._tool_choice_required = True
+            self._task_completed = False
+            self._task_summary = ""
 
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
@@ -9778,6 +9840,15 @@ class AIAgent:
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                    # ── task_complete check ──────────────────────────────
+                    if getattr(self, '_task_completed', False):
+                        final_response = getattr(self, '_task_summary', '')
+                        _turn_exit_reason = "task_complete_tool"
+                        messages.append({"role": "assistant", "content": final_response})
+                        if not self.quiet_mode:
+                            self._safe_print(f'Task completed (via task_complete tool): {final_response[:200]}')
+                        break
+
                     # Reset per-turn retry counters after successful tool
                     # execution so a single truncation doesn't poison the
                     # entire conversation.
@@ -9875,6 +9946,52 @@ class AIAgent:
                 else:
                     # No tool calls - this is the final response
                     final_response = assistant_message.content or ""
+                    
+                    # ── task_complete enforcement ───────────────────────────
+                    # When _enable_task_complete is set, text-only responses
+                    # mean the model didn't call task_complete. Inject a
+                    # continuation prompt and retry (up to 3 times).
+                    _tc_dbg_enabled = getattr(self, '_enable_task_complete', False)
+                    _tc_dbg_stripped = bool(final_response.strip())
+                    import sys as _tc_sys; _tc_sys.stderr.write("[TC_DEBUG] enabled=" + str(getattr(self, "_enable_task_complete", False)) + " content=" + str(bool(final_response.strip())) + chr(10)); _tc_sys.stderr.flush()
+                    # When enforcement is active and response is empty, check if
+                    # the model left content in a prior turn. If so, treat it as
+                    # the model trying to end the run without task_complete.
+                    if _tc_dbg_enabled and not _tc_dbg_stripped:
+                        _tc_prior = getattr(self, '_last_content_with_tools', None)
+                        if _tc_prior:
+                            final_response = self._strip_think_blocks(_tc_prior).strip()
+                            _tc_dbg_stripped = bool(final_response)
+
+                    if _tc_dbg_enabled and _tc_dbg_stripped:
+                        _tc_retries = getattr(self, '_task_complete_retries', 0)
+                        if _tc_retries < 3:
+                            self._task_complete_retries = _tc_retries + 1
+                            logger.warning(
+                                "Text-only response without task_complete (retry %d/3): %s",
+                                _tc_retries + 1, final_response[:200],
+                            )
+                            self._emit_status(
+                                f"↻ Model responded without task_complete — retrying ({_tc_retries + 1}/3)"
+                            )
+                            messages.append(self._build_assistant_message(assistant_message, finish_reason))
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "[System] You responded with text instead of calling a tool. "
+                                    "You MUST continue working using your tools. "
+                                    "When your task is fully complete, call the task_complete tool with a summary. "
+                                    "Do NOT respond with text — use your tools to continue working."
+                                ),
+                            })
+                            self._session_messages = messages
+                            self._save_session_log(messages)
+                            continue
+                        else:
+                            logger.warning(
+                                "Text-only response without task_complete after %d retries. Accepting as final.",
+                                _tc_retries,
+                            )
                     
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):

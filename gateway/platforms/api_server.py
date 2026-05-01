@@ -1606,6 +1606,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                 )
                 def _run_sync():
+                    agent._enable_task_complete = True
                     r = agent.run_conversation(
                         user_message=user_message,
                         conversation_history=conversation_history,
