@@ -254,15 +254,16 @@ class GatewayStreamConsumer:
         """Strip MEDIA: directives and internal markers from text before display.
 
         The streaming path delivers raw text chunks that may include
-        ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
-        the platform adapter's post-processing.  The actual media files are
-        delivered separately via ``_deliver_media_from_response()`` after the
-        stream finishes — we just need to hide the raw directives from the
-        user.
+        ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` / ``[[as_document]]``
+        directives meant for the platform adapter's post-processing.  The actual
+        media files are delivered separately via ``_deliver_media_from_response()``
+        after the stream finishes — we just need to hide the raw directives from
+        the user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text and "[[as_document]]" not in text:
             return text
         cleaned = text.replace("[[audio_as_voice]]", "")
+        cleaned = cleaned.replace("[[as_document]]", "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)

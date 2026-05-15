@@ -1716,7 +1716,7 @@ async def send_weixin_direct(
             if not last_result.success:
                 return {"error": f"Weixin send failed: {last_result.error}"}
 
-        for media_path, _is_voice in media_files or []:
+        for media_path, _is_voice, _is_document in media_files or []:
             ext = Path(media_path).suffix.lower()
             if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
                 last_result = await adapter.send_image_file(chat_id, media_path)

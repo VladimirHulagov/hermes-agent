@@ -1136,19 +1136,24 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
     @staticmethod
-    def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
+    def extract_media(content: str) -> Tuple[List[Tuple[str, bool, bool]], str]:
         """
-        Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
+        Extract MEDIA:<path> tags and [[audio_as_voice]] / [[as_document]] directives from response text.
         
         The TTS tool returns responses like:
             [[audio_as_voice]]
             MEDIA:/path/to/audio.ogg
         
+        The [[as_document]] directive forces media to be sent as a document
+        (e.g., to preserve PNG alpha channel in Telegram):
+            [[as_document]]
+            MEDIA:/path/to/screenshot.png
+        
         Args:
             content: The response text to scan.
         
         Returns:
-            Tuple of (list of (path, is_voice) pairs, cleaned content with tags removed).
+            Tuple of (list of (path, is_voice, is_document) triples, cleaned content with tags removed).
         """
         media = []
         cleaned = content
@@ -1156,6 +1161,10 @@ class BasePlatformAdapter(ABC):
         # Check for [[audio_as_voice]] directive
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = cleaned.replace("[[audio_as_voice]]", "")
+        
+        # Check for [[as_document]] directive
+        has_document_tag = "[[as_document]]" in content
+        cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
@@ -1168,7 +1177,7 @@ class BasePlatformAdapter(ABC):
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((path, has_voice_tag))
+                media.append((path, has_voice_tag, has_document_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
@@ -1580,7 +1589,7 @@ class BasePlatformAdapter(ABC):
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
                 # Strip any remaining internal directives from message body (fixes #1561)
-                text_content = text_content.replace("[[audio_as_voice]]", "").strip()
+                text_content = text_content.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "").strip()
                 text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
@@ -1679,38 +1688,46 @@ class BasePlatformAdapter(ABC):
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
-                for media_path, is_voice in media_files:
+                for media_path, is_voice, is_document in media_files:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
-                        ext = Path(media_path).suffix.lower()
-                        if ext in _AUDIO_EXTS:
-                            media_result = await self.send_voice(
-                                chat_id=event.source.chat_id,
-                                audio_path=media_path,
-                                metadata=_thread_metadata,
-                            )
-                        elif ext in _VIDEO_EXTS:
-                            media_result = await self.send_video(
-                                chat_id=event.source.chat_id,
-                                video_path=media_path,
-                                metadata=_thread_metadata,
-                            )
-                        elif ext in _IMAGE_EXTS:
-                            media_result = await self.send_image_file(
-                                chat_id=event.source.chat_id,
-                                image_path=media_path,
-                                metadata=_thread_metadata,
-                            )
-                        else:
+                        if is_document:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=media_path,
                                 metadata=_thread_metadata,
                             )
+                        else:
+                            ext = Path(media_path).suffix.lower()
+                            if ext in _AUDIO_EXTS:
+                                media_result = await self.send_voice(
+                                    chat_id=event.source.chat_id,
+                                    audio_path=media_path,
+                                    metadata=_thread_metadata,
+                                )
+                            elif ext in _VIDEO_EXTS:
+                                media_result = await self.send_video(
+                                    chat_id=event.source.chat_id,
+                                    video_path=media_path,
+                                    metadata=_thread_metadata,
+                                )
+                            elif ext in _IMAGE_EXTS:
+                                media_result = await self.send_image_file(
+                                    chat_id=event.source.chat_id,
+                                    image_path=media_path,
+                                    metadata=_thread_metadata,
+                                )
+                            else:
+                                media_result = await self.send_document(
+                                    chat_id=event.source.chat_id,
+                                    file_path=media_path,
+                                    metadata=_thread_metadata,
+                                )
 
                         if not media_result.success:
-                            logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                            _ext = Path(media_path).suffix.lower() if not is_document else "doc"
+                            logger.warning("[%s] Failed to send media (%s): %s", self.name, _ext, media_result.error)
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 

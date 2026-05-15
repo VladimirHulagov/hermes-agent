@@ -296,7 +296,7 @@ class TestSendMessageTool:
             "-1001",
             "",
             thread_id=None,
-            media_files=[("/tmp/example.ogg", False)],
+            media_files=[("/tmp/example.ogg", False, False)],
         )
         mirror_mock.assert_called_once_with(
             "telegram",
@@ -353,7 +353,7 @@ class TestSendTelegramMediaDelivery:
                 "token",
                 "12345",
                 "Hello there",
-                media_files=[(str(image_path), False)],
+                media_files=[(str(image_path), False, False)],
             )
         )
 
@@ -383,7 +383,7 @@ class TestSendTelegramMediaDelivery:
                 "token",
                 "12345",
                 "",
-                media_files=[(str(voice_path), True)],
+                media_files=[(str(voice_path), True, False)],
             )
         )
 
@@ -410,7 +410,7 @@ class TestSendTelegramMediaDelivery:
                 "token",
                 "12345",
                 "",
-                media_files=[(str(audio_path), False)],
+                media_files=[(str(audio_path), False, False)],
             )
         )
 
@@ -433,7 +433,7 @@ class TestSendTelegramMediaDelivery:
                 "token",
                 "12345",
                 "",
-                media_files=[("/tmp/does-not-exist.png", False)],
+                media_files=[("/tmp/does-not-exist.png", False, False)],
             )
         )
 
@@ -581,7 +581,7 @@ class TestSendToPlatformChunking:
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
         long_msg = "word " * 2000  # ~10000 chars, well over 4096
-        media = [("/tmp/photo.png", False)]
+        media = [("/tmp/photo.png", False, False)]
         with patch("tools.send_message_tool._send_telegram", fake_send):
             asyncio.run(
                 _send_to_platform(

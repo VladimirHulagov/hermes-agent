@@ -270,7 +270,7 @@ class TestWeixinSendMessageIntegration:
                 config,
                 "wxid_test123",
                 "hello",
-                media_files=[("/tmp/demo.png", False)],
+                media_files=[("/tmp/demo.png", False, False)],
             )
         )
 
@@ -279,7 +279,7 @@ class TestWeixinSendMessageIntegration:
             config,
             "wxid_test123",
             "hello",
-            media_files=[("/tmp/demo.png", False)],
+            media_files=[("/tmp/demo.png", False, False)],
         )
 
 

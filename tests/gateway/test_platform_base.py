@@ -264,14 +264,16 @@ class TestExtractMedia:
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
         assert media[0][0] == "/path/to/audio.ogg"
-        assert media[0][1] is False  # no voice tag
+        assert media[0][1] is False
+        assert media[0][2] is False
 
     def test_media_with_voice_directive(self):
         content = "[[audio_as_voice]]\nMEDIA:/path/to/voice.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
         assert media[0][0] == "/path/to/voice.ogg"
-        assert media[0][1] is True  # voice tag present
+        assert media[0][1] is True
+        assert media[0][2] is False
 
     def test_multiple_media_tags(self):
         content = "MEDIA:/a.ogg\nMEDIA:/b.ogg"
@@ -299,25 +301,49 @@ class TestExtractMedia:
     def test_media_tag_allows_optional_whitespace_after_colon(self):
         content = "MEDIA: /path/to/audio.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert media == [("/path/to/audio.ogg", False)]
+        assert media == [("/path/to/audio.ogg", False, False)]
         assert cleaned == ""
 
     def test_media_tag_strips_wrapping_quotes_and_backticks(self):
         content = "MEDIA: `/path/to/file.png`\nMEDIA:\"/path/to/file2.png\"\nMEDIA:'/path/to/file3.png'"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [
-            ("/path/to/file.png", False),
-            ("/path/to/file2.png", False),
-            ("/path/to/file3.png", False),
+            ("/path/to/file.png", False, False),
+            ("/path/to/file2.png", False, False),
+            ("/path/to/file3.png", False, False),
         ]
         assert cleaned == ""
 
     def test_media_tag_supports_quoted_paths_with_spaces(self):
         content = "Here\nMEDIA: '/tmp/my image.png'\nAfter"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        assert media == [("/tmp/my image.png", False)]
+        assert media == [("/tmp/my image.png", False, False)]
         assert "Here" in cleaned
         assert "After" in cleaned
+
+    def test_media_with_document_directive(self):
+        content = "[[as_document]]\nMEDIA:/path/to/screenshot.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/path/to/screenshot.png"
+        assert media[0][1] is False
+        assert media[0][2] is True
+
+    def test_document_directive_removed_from_content(self):
+        content = "[[as_document]]\nSome text\nMEDIA:/screenshot.png"
+        _, cleaned = BasePlatformAdapter.extract_media(content)
+        assert "[[as_document]]" not in cleaned
+        assert "MEDIA:" not in cleaned
+        assert "Some text" in cleaned
+
+    def test_both_voice_and_document_directives(self):
+        content = "[[audio_as_voice]]\n[[as_document]]\nMEDIA:/path/file.ogg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][1] is True
+        assert media[0][2] is True
+        assert "[[audio_as_voice]]" not in cleaned
+        assert "[[as_document]]" not in cleaned
 
 
 # ---------------------------------------------------------------------------

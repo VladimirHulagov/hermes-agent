@@ -4955,33 +4955,40 @@ class GatewayRunner:
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
-            for media_path, is_voice in media_files:
+            for media_path, is_voice, is_document in media_files:
                 try:
-                    ext = Path(media_path).suffix.lower()
-                    if ext in _AUDIO_EXTS:
-                        await adapter.send_voice(
-                            chat_id=event.source.chat_id,
-                            audio_path=media_path,
-                            metadata=_thread_meta,
-                        )
-                    elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
-                            chat_id=event.source.chat_id,
-                            video_path=media_path,
-                            metadata=_thread_meta,
-                        )
-                    elif ext in _IMAGE_EXTS:
-                        await adapter.send_image_file(
-                            chat_id=event.source.chat_id,
-                            image_path=media_path,
-                            metadata=_thread_meta,
-                        )
-                    else:
+                    if is_document:
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    else:
+                        ext = Path(media_path).suffix.lower()
+                        if ext in _AUDIO_EXTS:
+                            await adapter.send_voice(
+                                chat_id=event.source.chat_id,
+                                audio_path=media_path,
+                                metadata=_thread_meta,
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            await adapter.send_video(
+                                chat_id=event.source.chat_id,
+                                video_path=media_path,
+                                metadata=_thread_meta,
+                            )
+                        elif ext in _IMAGE_EXTS:
+                            await adapter.send_image_file(
+                                chat_id=event.source.chat_id,
+                                image_path=media_path,
+                                metadata=_thread_meta,
+                            )
+                        else:
+                            await adapter.send_document(
+                                chat_id=event.source.chat_id,
+                                file_path=media_path,
+                                metadata=_thread_meta,
+                            )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
@@ -7753,6 +7760,7 @@ class GatewayRunner:
             if "MEDIA:" not in final_response:
                 media_tags = []
                 has_voice_directive = False
+                has_document_directive = False
                 for msg in result.get("messages", []):
                     if msg.get("role") in ("tool", "function"):
                         content = msg.get("content", "")
@@ -7763,6 +7771,8 @@ class GatewayRunner:
                                     media_tags.append(f"MEDIA:{path}")
                             if "[[audio_as_voice]]" in content:
                                 has_voice_directive = True
+                            if "[[as_document]]" in content:
+                                has_document_directive = True
                 
                 if media_tags:
                     seen = set()
@@ -7771,6 +7781,8 @@ class GatewayRunner:
                         if tag not in seen:
                             seen.add(tag)
                             unique_tags.append(tag)
+                    if has_document_directive:
+                        unique_tags.insert(0, "[[as_document]]")
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)

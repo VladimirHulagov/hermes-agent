@@ -255,7 +255,7 @@ def _describe_media_for_mirror(media_files):
     if not media_files:
         return ""
     if len(media_files) == 1:
-        media_path, is_voice = media_files[0]
+        media_path, is_voice, _is_document = media_files[0]
         ext = os.path.splitext(media_path)[1].lower()
         if is_voice and ext in _VOICE_EXTS:
             return "[Sent voice message]"
@@ -507,36 +507,41 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 else:
                     raise
 
-        for media_path, is_voice in media_files:
+        for media_path, is_voice, is_document in media_files:
             if not os.path.exists(media_path):
                 warning = f"Media file not found, skipping: {media_path}"
                 logger.warning(warning)
                 warnings.append(warning)
                 continue
 
-            ext = os.path.splitext(media_path)[1].lower()
             try:
                 with open(media_path, "rb") as f:
-                    if ext in _IMAGE_EXTS:
-                        last_msg = await bot.send_photo(
-                            chat_id=int_chat_id, photo=f, **thread_kwargs
-                        )
-                    elif ext in _VIDEO_EXTS:
-                        last_msg = await bot.send_video(
-                            chat_id=int_chat_id, video=f, **thread_kwargs
-                        )
-                    elif ext in _VOICE_EXTS and is_voice:
-                        last_msg = await bot.send_voice(
-                            chat_id=int_chat_id, voice=f, **thread_kwargs
-                        )
-                    elif ext in _AUDIO_EXTS:
-                        last_msg = await bot.send_audio(
-                            chat_id=int_chat_id, audio=f, **thread_kwargs
-                        )
-                    else:
+                    if is_document:
                         last_msg = await bot.send_document(
                             chat_id=int_chat_id, document=f, **thread_kwargs
                         )
+                    else:
+                        ext = os.path.splitext(media_path)[1].lower()
+                        if ext in _IMAGE_EXTS:
+                            last_msg = await bot.send_photo(
+                                chat_id=int_chat_id, photo=f, **thread_kwargs
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            last_msg = await bot.send_video(
+                                chat_id=int_chat_id, video=f, **thread_kwargs
+                            )
+                        elif ext in _VOICE_EXTS and is_voice:
+                            last_msg = await bot.send_voice(
+                                chat_id=int_chat_id, voice=f, **thread_kwargs
+                            )
+                        elif ext in _AUDIO_EXTS:
+                            last_msg = await bot.send_audio(
+                                chat_id=int_chat_id, audio=f, **thread_kwargs
+                            )
+                        else:
+                            last_msg = await bot.send_document(
+                                chat_id=int_chat_id, document=f, **thread_kwargs
+                            )
             except Exception as e:
                 warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
                 logger.error(warning)
@@ -991,21 +996,24 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
             if not last_result.success:
                 return _error(f"Feishu send failed: {last_result.error}")
 
-        for media_path, is_voice in media_files:
+        for media_path, is_voice, is_document in media_files:
             if not os.path.exists(media_path):
                 return _error(f"Media file not found: {media_path}")
 
-            ext = os.path.splitext(media_path)[1].lower()
-            if ext in _IMAGE_EXTS:
-                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
-            elif ext in _VIDEO_EXTS:
-                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
-            elif ext in _VOICE_EXTS and is_voice:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            elif ext in _AUDIO_EXTS:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            else:
+            if is_document:
                 last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+            else:
+                ext = os.path.splitext(media_path)[1].lower()
+                if ext in _IMAGE_EXTS:
+                    last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+                elif ext in _VIDEO_EXTS:
+                    last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+                elif ext in _VOICE_EXTS and is_voice:
+                    last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                elif ext in _AUDIO_EXTS:
+                    last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                else:
+                    last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
 
             if not last_result.success:
                 return _error(f"Feishu media send failed: {last_result.error}")

@@ -309,7 +309,7 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in args[3]
         assert "Title" in args[3]
         # Media files should be forwarded separately
-        assert kwargs["media_files"] == [("/tmp/test-voice.ogg", False)]
+        assert kwargs["media_files"] == [("/tmp/test-voice.ogg", False, False)]
 
     def test_live_adapter_sends_media_as_attachments(self):
         """When a live adapter is available, MEDIA files should be sent as native
@@ -1186,7 +1186,7 @@ class TestSendMediaViaAdapter:
     def test_video_dispatched_to_send_video(self):
         adapter = MagicMock()
         adapter.send_video = AsyncMock()
-        media_files = [("/tmp/clip.mp4", False)]
+        media_files = [("/tmp/clip.mp4", False, False)]
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j1"})
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == "/tmp/clip.mp4"
@@ -1194,7 +1194,7 @@ class TestSendMediaViaAdapter:
     def test_unknown_ext_dispatched_to_send_document(self):
         adapter = MagicMock()
         adapter.send_document = AsyncMock()
-        media_files = [("/tmp/report.pdf", False)]
+        media_files = [("/tmp/report.pdf", False, False)]
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j2"})
         adapter.send_document.assert_called_once()
         assert adapter.send_document.call_args[1]["file_path"] == "/tmp/report.pdf"
@@ -1203,7 +1203,7 @@ class TestSendMediaViaAdapter:
         adapter = MagicMock()
         adapter.send_voice = AsyncMock()
         adapter.send_image_file = AsyncMock()
-        media_files = [("/tmp/voice.mp3", False), ("/tmp/photo.jpg", False)]
+        media_files = [("/tmp/voice.mp3", False, False), ("/tmp/photo.jpg", False, False)]
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j3"})
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
@@ -1212,7 +1212,7 @@ class TestSendMediaViaAdapter:
         adapter = MagicMock()
         adapter.send_voice = AsyncMock(side_effect=RuntimeError("network error"))
         adapter.send_image_file = AsyncMock()
-        media_files = [("/tmp/voice.ogg", False), ("/tmp/photo.png", False)]
+        media_files = [("/tmp/voice.ogg", False, False), ("/tmp/photo.png", False, False)]
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j4"})
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()

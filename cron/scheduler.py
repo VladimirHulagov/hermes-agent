@@ -173,17 +173,20 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
     """
     from pathlib import Path
 
-    for media_path, _is_voice in media_files:
+    for media_path, _is_voice, is_document in media_files:
         try:
-            ext = Path(media_path).suffix.lower()
-            if ext in _AUDIO_EXTS:
-                coro = adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
-            elif ext in _VIDEO_EXTS:
-                coro = adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=metadata)
-            elif ext in _IMAGE_EXTS:
-                coro = adapter.send_image_file(chat_id=chat_id, image_path=media_path, metadata=metadata)
-            else:
+            if is_document:
                 coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
+            else:
+                ext = Path(media_path).suffix.lower()
+                if ext in _AUDIO_EXTS:
+                    coro = adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
+                elif ext in _VIDEO_EXTS:
+                    coro = adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=metadata)
+                elif ext in _IMAGE_EXTS:
+                    coro = adapter.send_image_file(chat_id=chat_id, image_path=media_path, metadata=metadata)
+                else:
+                    coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
 
             future = asyncio.run_coroutine_threadsafe(coro, loop)
             result = future.result(timeout=30)
@@ -422,19 +425,28 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     raw = Path(script_file).expanduser()
     if raw.is_absolute():
+        # Security check on the raw absolute path first
+        try:
+            raw.relative_to(scripts_dir_resolved)
+        except ValueError:
+            return False, (
+                f"Blocked: script path is outside the scripts directory "
+                f"({scripts_dir_resolved}): {script_path!r}"
+            )
         path = raw.resolve()
     else:
-        path = (scripts_dir / raw).resolve()
-
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
-        return False, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
-        )
+        # Resolve relative to scripts_dir, but validate BEFORE following
+        # symlinks — otherwise legitimate symlinks inside scripts/ that
+        # point outside (e.g. to ~/.hermes/scripts/) get blocked.
+        unresolved = (scripts_dir / raw)
+        try:
+            unresolved.relative_to(scripts_dir_resolved)
+        except ValueError:
+            return False, (
+                f"Blocked: script path is outside the scripts directory "
+                f"({scripts_dir_resolved}): {script_path!r}"
+            )
+        path = unresolved.resolve()
 
     if not path.exists():
         return False, f"Script not found: {path}"
