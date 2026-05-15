@@ -300,7 +300,10 @@ PLATFORM_HINTS = {
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
         "bubbles, and videos (.mp4) play inline. You can also include image "
-        "URLs in markdown format ![alt](url) and they will be sent as native photos."
+        "URLs in markdown format ![alt](url) and they will be sent as native photos. "
+        "To send an image as a downloadable document instead of a photo (preserving "
+        "original quality/transparency), add [[as_document]] before the MEDIA: tag: "
+        "[[as_document]]\\nMEDIA:/path/to/file.png"
     ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. "
