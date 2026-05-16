@@ -638,8 +638,14 @@ DEFAULT_CONFIG = {
         "backup_count": 3,     # Number of rotated backup files to keep
     },
 
+    "stop_words": {
+        "enabled": False,
+        "words": [],
+        "placeholder": "[FILTERED]",
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 14,
+    "_config_version": 15,
 }
 
 # =============================================================================

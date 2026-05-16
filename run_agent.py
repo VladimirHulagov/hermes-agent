@@ -1244,6 +1244,13 @@ class AIAgent:
         except Exception:
             pass
 
+        _stop_words_cfg = _agent_cfg.get("stop_words", {})
+        if not isinstance(_stop_words_cfg, dict):
+            _stop_words_cfg = {}
+        self._stop_words_enabled = bool(_stop_words_cfg.get("enabled", False))
+        self._stop_words = [w.lower() for w in (_stop_words_cfg.get("words") or []) if isinstance(w, str) and w.strip()]
+        self._stop_words_placeholder = str(_stop_words_cfg.get("placeholder", "[FILTERED]"))
+
         # Tool-use enforcement config: "auto" (default — matches hardcoded
         # model list), true (always), false (never), or list of substrings.
         _agent_section = _agent_cfg.get("agent", {})
@@ -3243,6 +3250,63 @@ class AIAgent:
         return getattr(tc, "id", "") or ""
 
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
+    def _filter_stop_words(self, api_messages: list) -> list:
+        if not self._stop_words_enabled or not self._stop_words:
+            return api_messages
+        import re as _re
+        filtered = []
+        for idx, msg in enumerate(api_messages):
+            msg = msg.copy()
+            role = msg.get("role", "unknown")
+            if "content" in msg:
+                content = msg["content"]
+                if isinstance(content, str):
+                    for word in self._stop_words:
+                        pattern = _re.compile(_re.escape(word), _re.IGNORECASE)
+                        if pattern.search(content):
+                            logging.info("Stop word '%s' found in message [%d] (role=%s), replaced with %s", word, idx, role, self._stop_words_placeholder)
+                            content = pattern.sub(self._stop_words_placeholder, content)
+                    msg["content"] = content
+                elif isinstance(content, list):
+                    new_parts = []
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            text = part.get("text", "")
+                            for word in self._stop_words:
+                                pattern = _re.compile(_re.escape(word), _re.IGNORECASE)
+                                if pattern.search(text):
+                                    logging.info("Stop word '%s' found in message [%d] (role=%s) text block, replaced with %s", word, idx, role, self._stop_words_placeholder)
+                                    text = pattern.sub(self._stop_words_placeholder, text)
+                            new_parts.append({**part, "text": text})
+                        else:
+                            new_parts.append(part)
+                    msg["content"] = new_parts
+            if "tool_calls" in msg:
+                new_tcs = []
+                for tc in msg["tool_calls"]:
+                    tc = tc.copy()
+                    func = tc.get("function", {}).copy()
+                    fname = func.get("name", "")
+                    for word in self._stop_words:
+                        pattern = _re.compile(_re.escape(word), _re.IGNORECASE)
+                        if pattern.search(fname):
+                            logging.info("Stop word '%s' found in message [%d] (role=%s) tool_call name, replaced with %s", word, idx, role, self._stop_words_placeholder)
+                            fname = pattern.sub(self._stop_words_placeholder, fname)
+                    func["name"] = fname
+                    fargs = func.get("arguments", "")
+                    if isinstance(fargs, str):
+                        for word in self._stop_words:
+                            pattern = _re.compile(_re.escape(word), _re.IGNORECASE)
+                            if pattern.search(fargs):
+                                logging.info("Stop word '%s' found in message [%d] (role=%s) tool_call arguments, replaced with %s", word, idx, role, self._stop_words_placeholder)
+                                fargs = pattern.sub(self._stop_words_placeholder, fargs)
+                        func["arguments"] = fargs
+                    tc["function"] = func
+                    new_tcs.append(tc)
+                msg["tool_calls"] = new_tcs
+            filtered.append(msg)
+        return filtered
 
     @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -6479,6 +6543,8 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
+            api_messages = self._filter_stop_words(api_messages)
+
             if self._cached_system_prompt:
                 api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
 
@@ -7472,6 +7538,8 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
+            api_messages = self._filter_stop_words(api_messages)
+
             effective_system = self._cached_system_prompt or ""
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
@@ -8075,6 +8143,7 @@ class AIAgent:
             # gated on context_compressor — so orphans from session loading or
             # manual message manipulation are always caught.
             api_messages = self._sanitize_api_messages(api_messages)
+            api_messages = self._filter_stop_words(api_messages)
 
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)

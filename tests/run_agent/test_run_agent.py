@@ -3919,3 +3919,143 @@ class TestDeadRetryCode:
             f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
             f"but found {occurrences}"
         )
+
+
+class TestStopWordsFilter:
+    def test_basic_substring_replacement(self, agent):
+        agent._stop_words_enabled = True
+        agent._stop_words = ["secret"]
+        agent._stop_words_placeholder = "[FILTERED]"
+        messages = [
+            {"role": "user", "content": "here is a secret value"},
+            {"role": "assistant", "content": "I see the secret"},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert result[0]["content"] == "here is a [FILTERED] value"
+        assert result[1]["content"] == "I see the [FILTERED]"
+
+    def test_case_insensitive(self, agent):
+        agent._stop_words_enabled = True
+        agent._stop_words = ["Secret"]
+        agent._stop_words_placeholder = "[FILTERED]"
+        messages = [
+            {"role": "user", "content": "SECRET and secret and SeCrEt"},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert result[0]["content"] == "[FILTERED] and [FILTERED] and [FILTERED]"
+
+    def test_disabled_no_filtering(self, agent):
+        agent._stop_words_enabled = False
+        agent._stop_words = ["secret"]
+        agent._stop_words_placeholder = "[FILTERED]"
+        messages = [
+            {"role": "user", "content": "here is a secret value"},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert result[0]["content"] == "here is a secret value"
+
+    def test_empty_words_no_filtering(self, agent):
+        agent._stop_words_enabled = True
+        agent._stop_words = []
+        agent._stop_words_placeholder = "[FILTERED]"
+        messages = [
+            {"role": "user", "content": "here is a secret value"},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert result[0]["content"] == "here is a secret value"
+
+    def test_multimodal_content(self, agent):
+        agent._stop_words_enabled = True
+        agent._stop_words = ["secret"]
+        agent._stop_words_placeholder = "[FILTERED]"
+        messages = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "a secret here"},
+                {"type": "image_url", "image_url": {"url": "http://secret.img"}},
+            ]},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert result[0]["content"][0]["text"] == "a [FILTERED] here"
+        assert result[0]["content"][1]["image_url"]["url"] == "http://secret.img"
+
+    def test_tool_call_arguments(self, agent):
+        agent._stop_words_enabled = True
+        agent._stop_words = ["secret"]
+        agent._stop_words_placeholder = "[FILTERED]"
+        messages = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "tc1", "type": "function", "function": {"name": "write_file", "arguments": '{"path": "/secret/file.txt"}'}},
+            ]},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert '"path": "/[FILTERED]/file.txt"' in result[0]["tool_calls"][0]["function"]["arguments"]
+
+    def test_tool_call_name(self, agent):
+        agent._stop_words_enabled = True
+        agent._stop_words = ["secret"]
+        agent._stop_words_placeholder = "[FILTERED]"
+        messages = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "tc1", "type": "function", "function": {"name": "secret_tool", "arguments": "{}"}},
+            ]},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert result[0]["tool_calls"][0]["function"]["name"] == "[FILTERED]_tool"
+
+    def test_custom_placeholder(self, agent):
+        agent._stop_words_enabled = True
+        agent._stop_words = ["secret"]
+        agent._stop_words_placeholder = "***"
+        messages = [
+            {"role": "user", "content": "a secret here"},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert result[0]["content"] == "a *** here"
+
+    def test_multiple_stop_words(self, agent):
+        agent._stop_words_enabled = True
+        agent._stop_words = ["secret", "password"]
+        agent._stop_words_placeholder = "[FILTERED]"
+        messages = [
+            {"role": "user", "content": "secret and password here"},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert result[0]["content"] == "[FILTERED] and [FILTERED] here"
+
+    def test_does_not_modify_original(self, agent):
+        agent._stop_words_enabled = True
+        agent._stop_words = ["secret"]
+        agent._stop_words_placeholder = "[FILTERED]"
+        original_content = "a secret here"
+        messages = [
+            {"role": "user", "content": original_content},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert messages[0]["content"] == original_content
+        assert result[0]["content"] == "a [FILTERED] here"
+
+    def test_non_text_content_blocks_untouched(self, agent):
+        agent._stop_words_enabled = True
+        agent._stop_words = ["secret"]
+        agent._stop_words_placeholder = "[FILTERED]"
+        messages = [
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "a secret"},
+                {"type": "image_url", "image_url": {"url": "http://secret.png"}},
+            ]},
+        ]
+        result = agent._filter_stop_words(messages)
+        assert result[0]["content"][0]["text"] == "a [FILTERED]"
+        assert result[0]["content"][1]["image_url"]["url"] == "http://secret.png"
+
+    def test_logging_on_match(self, agent, caplog):
+        agent._stop_words_enabled = True
+        agent._stop_words = ["secret"]
+        agent._stop_words_placeholder = "[FILTERED]"
+        messages = [
+            {"role": "user", "content": "a secret here"},
+        ]
+        import logging
+        with caplog.at_level(logging.INFO):
+            result = agent._filter_stop_words(messages)
+        assert any("secret" in r.message for r in caplog.records)

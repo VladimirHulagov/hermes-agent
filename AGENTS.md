@@ -222,7 +222,7 @@ The registry handles schema collection, dispatch, availability checking, and err
 
 ### config.yaml options:
 1. Add to `DEFAULT_CONFIG` in `hermes_cli/config.py`
-2. Bump `_config_version` (currently 5) to trigger migration for existing users
+2. Bump `_config_version` (currently 15) to trigger migration for existing users
 
 ### .env variables:
 1. Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` with metadata:
@@ -332,6 +332,62 @@ tool_prefix: "▏"
 ```
 
 Activate with `/skin cyberpunk` or `display.skin: cyberpunk` in config.yaml.
+
+---
+
+---
+
+## Stop Words Filter
+
+Configurable content filter that replaces matched substrings in conversation history before sending to the LLM API. Prevents sensitive terms from reaching the model provider.
+
+### Configuration (`config.yaml`)
+
+```yaml
+stop_words:
+  enabled: false          # Master switch
+  words: []               # List of strings, matched as case-insensitive substrings
+  placeholder: "[FILTERED]"  # Replacement text
+```
+
+- No default words provided — the list is entirely user-defined.
+- Matching uses case-insensitive substring search across all message content.
+- Detections are logged to `agent.log` at INFO level.
+
+### Architecture
+
+`_filter_stop_words()` method on `AIAgent` in `run_agent.py`:
+
+1. Skips entirely if `enabled: false` or `words` list is empty
+2. Iterates over `api_messages` (shallow copies — original `messages` untouched)
+3. Scans text fields: `content` (string or multimodal list-of-dicts), `tool_calls[].function.name`, `tool_calls[].function.arguments`
+4. Only `{"type": "text"}` blocks in multimodal content are scanned — image URLs etc. are untouched
+5. Replaces all occurrences with `placeholder`, logs each match
+
+### Call sites (3 API dispatch points)
+
+The filter runs on `api_messages` **after** construction/sanitization, **before** the API call:
+
+1. **Main agent loop** — after `_sanitize_api_messages()`, before `_build_api_kwargs()`
+2. **Memory flush** (`flush_memories()`) — after message copy loop, before auxiliary API call
+3. **Iteration-limit summary** (`_handle_max_iterations()`) — after message copy loop, before summary API call
+
+### Prompt caching safety
+
+Filter operates on `api_messages` (copies), never on the original `messages` list. Since filtering is deterministic (same words → same output), the filtered content remains stable across requests, preserving cache hits. Changing the stop words list mid-conversation causes a single cache miss before re-stabilizing.
+
+### Adding new stop words
+
+Edit `config.yaml` and restart the agent. No code changes needed:
+
+```yaml
+stop_words:
+  enabled: true
+  words:
+    - "secret_project_name"
+    - "internal_api_key"
+  placeholder: "[REDACTED]"
+```
 
 ---
 
