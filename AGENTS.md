@@ -511,6 +511,33 @@ def profile_env(tmp_path, monkeypatch):
 
 ---
 
+## Telegram: Image-as-Document Handling
+
+When a user sends an image via Telegram's "Send as File" / "Attach Document" option
+(instead of the gallery picker), the message arrives as `msg.document` rather than
+`msg.photo`. The document handler in `_handle_media_message()` now detects image
+extensions (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`) and MIME types
+(`image/png`, `image/jpeg`, etc.) and routes them through the **photo pipeline**
+instead of rejecting them as unsupported document types.
+
+### Architecture (`gateway/platforms/telegram.py`)
+
+1. Extension is resolved from filename, then from MIME type (including image MIMEs)
+2. If extension matches an image format, the file is downloaded and cached via
+   `cache_image_from_bytes()`
+3. `event.message_type` is set to `MessageType.PHOTO`
+4. The event enters the same photo batching / album merge pipeline as gallery photos
+5. Non-image documents (`.pdf`, `.zip`, etc.) are unaffected
+
+### Relevant code
+
+- Image detection: `telegram.py` ~line 2426, `_image_exts` set + `_image_mime_to_ext` lookup
+- Photo pipeline: `telegram.py` ~line 2350, `msg.photo` block
+- Vision enrichment: `gateway/run.py` `_enrich_message_with_vision()`
+- Tests: `tests/gateway/test_telegram_documents.py` `TestImageAsDocument`
+
+---
+
 ## Testing
 
 ```bash

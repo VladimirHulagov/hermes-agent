@@ -2410,10 +2410,95 @@ class TelegramAdapter(BasePlatformAdapter):
                     _, ext = os.path.splitext(original_filename)
                     ext = ext.lower()
 
-                # If no extension from filename, reverse-lookup from MIME type
+                # If no extension from filename, try MIME-type lookup
                 if not ext and doc.mime_type:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(doc.mime_type, "")
+                    # Also try image MIME types
+                    if not ext:
+                        _image_mime_to_ext = {
+                            "image/png": ".png", "image/jpeg": ".jpg",
+                            "image/gif": ".gif", "image/webp": ".webp",
+                            "image/bmp": ".bmp",
+                        }
+                        ext = _image_mime_to_ext.get(doc.mime_type, "")
+
+                # If the document is actually an image, handle like a photo
+                _image_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+                if ext in _image_exts:
+                    try:
+                        file_obj = await doc.get_file()
+                        image_bytes = await file_obj.download_as_bytearray()
+                        cached_path = cache_image_from_bytes(
+                            bytes(image_bytes), ext=ext
+                        )
+                        event.media_urls = [cached_path]
+                        event.media_types = [f"image/{ext.lstrip('.')}"]
+                        event.message_type = MessageType.PHOTO
+                        logger.info(
+                            "[Telegram] Cached image document at %s", cached_path
+                        )
+                        media_group_id = getattr(msg, "media_group_id", None)
+                        if media_group_id:
+                            await self._queue_media_group_event(
+                                str(media_group_id), event
+                            )
+                        else:
+                            batch_key = self._photo_batch_key(event, msg)
+                            self._enqueue_photo_event(batch_key, event)
+                        return
+                    except Exception as e:
+                        logger.warning(
+                            "[Telegram] Failed to cache image document: %s",
+                            e, exc_info=True,
+                        )
+
+                # Last resort: detect image by magic bytes even if ext is wrong
+                if ext not in SUPPORTED_DOCUMENT_TYPES and ext not in _image_exts:
+                    _MAGIC_SIGNATURES = {
+                        b"\x89PNG\r\n\x1a\n": ".png",
+                        b"\xff\xd8\xff": ".jpg",
+                        b"GIF87a": ".gif",
+                        b"GIF89a": ".gif",
+                        b"RIFF": None,  # need further check for webp
+                    }
+                    try:
+                        file_obj = await doc.get_file()
+                        head = await file_obj.download_as_bytearray()
+                        head_bytes = bytes(head[:16])
+                        detected_ext = None
+                        for sig, sig_ext in _MAGIC_SIGNATURES.items():
+                            if head_bytes.startswith(sig):
+                                if sig_ext is None and head_bytes[8:12] == b"WEBP":
+                                    detected_ext = ".webp"
+                                elif sig_ext:
+                                    detected_ext = sig_ext
+                                break
+                        if detected_ext and detected_ext in _image_exts:
+                            logger.info(
+                                "[Telegram] Detected image by magic bytes: %s → %s",
+                                ext or "unknown", detected_ext,
+                            )
+                            cached_path = cache_image_from_bytes(
+                                bytes(head), ext=detected_ext
+                            )
+                            event.media_urls = [cached_path]
+                            event.media_types = [f"image/{detected_ext.lstrip('.')}"]
+                            event.message_type = MessageType.PHOTO
+                            media_group_id = getattr(msg, "media_group_id", None)
+                            if media_group_id:
+                                await self._queue_media_group_event(
+                                    str(media_group_id), event
+                                )
+                            else:
+                                batch_key = self._photo_batch_key(event, msg)
+                                self._enqueue_photo_event(batch_key, event)
+                            return
+                    except Exception as e:
+                        logger.warning(
+                            "[Telegram] Failed magic-bytes detection: %s",
+                            e, exc_info=True,
+                        )
 
                 # Check if supported
                 if ext not in SUPPORTED_DOCUMENT_TYPES:

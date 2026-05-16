@@ -132,9 +132,12 @@ def adapter():
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point document cache to tmp_path so tests don't touch ~/.hermes."""
+    """Point caches to tmp_path so tests don't touch ~/.hermes."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img_cache"
     )
 
 
@@ -351,6 +354,89 @@ class TestDocumentDownloadBlock:
 # ---------------------------------------------------------------------------
 # TestMediaGroups — media group (album) buffering
 # ---------------------------------------------------------------------------
+
+class TestImageAsDocument:
+    """Images sent as Telegram documents should be routed to the photo/vision pipeline."""
+
+    PNG_MAGIC = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+    JPEG_MAGIC = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+
+    @pytest.mark.asyncio
+    async def test_png_document_routed_as_photo(self, adapter):
+        file_obj = _make_file_obj(self.PNG_MAGIC)
+        doc = _make_document(
+            file_name="screenshot.png", mime_type="image/png",
+            file_size=len(self.PNG_MAGIC), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc, caption="Check this")
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/cached.png") as mock_cache:
+            await adapter._handle_media_message(update, MagicMock())
+
+        mock_cache.assert_called_once_with(self.PNG_MAGIC, ext=".png")
+        assert adapter.handle_message.await_count == 0
+        await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/cached.png"]
+        assert event.media_types == ["image/png"]
+        assert event.text == "Check this"
+
+    @pytest.mark.asyncio
+    async def test_jpeg_document_routed_as_photo(self, adapter):
+        file_obj = _make_file_obj(self.JPEG_MAGIC)
+        doc = _make_document(
+            file_name="photo.jpeg", mime_type="image/jpeg",
+            file_size=len(self.JPEG_MAGIC), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/cached.jpg") as mock_cache:
+            await adapter._handle_media_message(update, MagicMock())
+
+        mock_cache.assert_called_once()
+        await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_types == ["image/jpeg"]
+
+    @pytest.mark.asyncio
+    async def test_png_by_mime_only_no_filename(self, adapter):
+        file_obj = _make_file_obj(self.PNG_MAGIC)
+        doc = _make_document(
+            file_name=None, mime_type="image/png",
+            file_size=len(self.PNG_MAGIC), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/cached.png") as mock_cache:
+            await adapter._handle_media_message(update, MagicMock())
+
+        mock_cache.assert_called_once_with(self.PNG_MAGIC, ext=".png")
+        await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_non_image_document_unaffected(self, adapter):
+        pdf_bytes = b"%PDF-1.4 fake"
+        file_obj = _make_file_obj(pdf_bytes)
+        doc = _make_document(
+            file_name="report.pdf", mime_type="application/pdf",
+            file_size=len(pdf_bytes), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["application/pdf"]
+
 
 class TestMediaGroups:
     @pytest.mark.asyncio
